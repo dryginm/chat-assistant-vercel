@@ -18,6 +18,7 @@
   },
   "homepage": "https://github.com/dryginm/chat-assistant-vercel#readme",
   "dependencies": {
+    "dotenv": "^17.2.3",
     "openai": "^6.9.0"
   }
 }
