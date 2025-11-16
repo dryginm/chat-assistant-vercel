@@ -1,59 +1,81 @@
+import { OpenAI } from 'openai';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const { threadId, message } = req.body;
+
+  if (!message) {
+    return res.status(400).json({ error: 'Missing message' });
+  }
+
+  const assistantId = process.env.ASSISTANT_ID;
+  if (!assistantId || !openai.apiKey) {
+    return res.status(500).json({ error: 'Missing environment variables' });
+  }
+
   try {
-    const { threadId, message } = req.body;
-    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-    const ASSISTANT_ID = process.env.ASSISTANT_ID;
+    // Шаг 1. Создаём или получаем thread
+    let thread;
+    if (threadId) {
+      thread = await openai.beta.threads.retrieve(threadId);
+    } else {
+      thread = await openai.beta.threads.create();
+    }
 
-    const openai = require("openai");
-    openai.apiKey = OPENAI_API_KEY;
-
-    const client = new openai.OpenAI({ apiKey: OPENAI_API_KEY });
-
-    // 1. Создаём тред или используем переданный
-    const thread = threadId
-      ? { id: threadId }
-      : await client.beta.threads.create();
-
-    // 2. Добавляем сообщение пользователя
-    await client.beta.threads.messages.create(thread.id, {
-      role: "user",
+    // Шаг 2. Добавляем сообщение в thread
+    await openai.beta.threads.messages.create(thread.id, {
+      role: 'user',
       content: message,
     });
 
-    // 3. Запускаем обработку ассистентом
-    const run = await client.beta.threads.runs.create(thread.id, {
-      assistant_id: ASSISTANT_ID,
+    // Шаг 3. Запускаем assistant run
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id: assistantId,
     });
 
-    // 4. Ждём завершения
-    let runStatus = null;
-    let attempts = 0;
-
-    while (attempts < 8) {
-      await new Promise((r) => setTimeout(r, 1000));
-      runStatus = await client.beta.threads.runs.retrieve(thread.id, run.id);
-      if (runStatus.status === "completed") break;
-      attempts++;
+    // Ждём завершения run
+    let completedRun;
+    const maxRetries = 16;
+    let retries = 0;
+    while (retries < maxRetries) {
+      completedRun = await openai.beta.threads.runs.retrieve(run.id, thread.id); // ✅ FIX: правильный порядок аргументов
+      if (completedRun.status === 'completed') break;
+      if (completedRun.status === 'failed') {
+        return res.status(500).json({ error: 'Run failed' });
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000)); // 1s delay
+      retries++;
     }
 
-    if (runStatus.status !== "completed") {
-      return res.status(408).json({ error: "Timeout waiting for assistant" });
+    if (completedRun.status !== 'completed') {
+      return res.status(500).json({ error: 'Run did not complete in time' });
     }
 
-    // 5. Получаем шаги и ищем ответ ассистента
-    const steps = await client.beta.threads.runs.steps.list(thread.id, run.id);
+    // Получаем последнее сообщение от ассистента
+    const messages = await openai.beta.threads.messages.list(thread.id);
+    const assistantMessages = messages.data.filter(msg => msg.role === 'assistant');
 
-    const assistantMessage = steps.data.find(
-      (step) => step.type === "message_creation"
-    )?.step_details?.message_creation?.message?.content[0]?.text?.value;
+    if (assistantMessages.length === 0) {
+      return res.status(500).json({ error: 'No assistant messages found' });
+    }
 
-    res.status(200).json({
-      result: assistantMessage,
-      runId: run.id,
+    const lastMessage = assistantMessages[0].content
+      .map(part => part.text?.value || '')
+      .join('\n');
+
+    return res.status(200).json({
       threadId: thread.id,
+      response: lastMessage,
     });
   } catch (error) {
-    console.error("❌ Error:", error);
-    res.status(500).json({ error: error.message || "Unknown error" });
+    console.error('❌ Error:', error);
+    return res.status(500).json({ error: error.message || 'Unknown error' });
   }
 }
