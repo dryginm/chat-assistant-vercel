@@ -7,8 +7,19 @@ const openai = new OpenAI({
 export default async function handler(req, res) {
   try {
     const { threadId, runId } = req.body;
+
     console.log("🔍 [check-run] Проверка статуса run:", { threadId, runId });
 
+    // ✅ Валидация входных данных
+    if (!threadId || typeof threadId !== "string" || !threadId.startsWith("thread_")) {
+      throw new Error(`❗ Invalid or missing threadId: ${threadId}`);
+    }
+
+    if (!runId || typeof runId !== "string" || !runId.startsWith("run_")) {
+      throw new Error(`❗ Invalid or missing runId: ${runId}`);
+    }
+
+    // 📥 Запрос к OpenAI
     const runStatus = await openai.beta.threads.runs.retrieve(threadId, runId);
     console.log("📊 Статус run:", runStatus.status);
 
