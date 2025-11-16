@@ -1,85 +1,82 @@
+// File: /api/chat-assistant.js
+
 import { OpenAI } from 'openai';
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 const ASSISTANT_ID = process.env.ASSISTANT_ID;
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Only POST requests are allowed' });
-  }
-
-  const { threadId, message } = req.body;
-
-  console.log('📥 Входящий запрос:', { threadId, message });
-
-  if (!ASSISTANT_ID) {
-    console.error('❌ Ошибка: ASSISTANT_ID is not defined');
-    return res.status(500).json({ error: 'Server configuration error: missing ASSISTANT_ID' });
-  }
-
-  if (!openai.apiKey) {
-    console.error('❌ Ошибка: OPENAI_API_KEY is not defined');
-    return res.status(500).json({ error: 'Server configuration error: missing OPENAI_API_KEY' });
-  }
-
   try {
-    let thread;
-
-    if (threadId) {
-      thread = { id: threadId };
-      console.log('📌 Используем thread:', threadId);
-    } else {
-      thread = await openai.beta.threads.create();
-      console.log('🧵 Новый thread создан:', thread.id);
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
     }
 
-    const messageResponse = await openai.beta.threads.messages.create(thread.id, {
+    const { threadId, message } = req.body;
+
+    console.log('📬 Входящий запрос:', { threadId, message });
+
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ error: 'Invalid or missing message' });
+    }
+
+    const thread =
+      threadId != null
+        ? { id: threadId }
+        : await openai.beta.threads.create();
+
+    console.log('📌 Используем thread:', thread.id);
+
+    const msg = await openai.beta.threads.messages.create(thread.id, {
       role: 'user',
-      content: message
+      content: message,
     });
 
-    console.log('✉️ Сообщение добавлено в thread:', messageResponse.id);
+    console.log('✉️ Сообщение добавлено в thread:', msg.id);
 
-    const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id: ASSISTANT_ID
+    const run = await openai.beta.threads.runs.create({
+      thread_id: thread.id,
+      assistant_id: ASSISTANT_ID,
     });
-
-    if (!run || !run.id) {
-      console.error('❌ Ошибка: не удалось создать run:', run);
-      return res.status(500).json({ error: 'Failed to create assistant run' });
-    }
 
     console.log('🤖 Assistant run создан:', run.id);
 
-    // Ждём завершения run (polling)
-    let runStatus;
-    do {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
-      console.log('⌛ Run статус:', runStatus.status);
-    } while (runStatus.status !== 'completed' && runStatus.status !== 'failed');
+    // Ждём завершения выполнения (можно заменить на polling, если нужно)
+    let runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
 
-    if (runStatus.status === 'failed') {
-      console.error('❌ Ошибка: Assistant run завершился с ошибкой');
-      return res.status(500).json({ error: 'Assistant run failed' });
+    while (
+      runStatus.status === 'queued' ||
+      runStatus.status === 'in_progress'
+    ) {
+      console.log(`⏳ Ждём завершения run... статус: ${runStatus.status}`);
+      await new Promise((r) => setTimeout(r, 1500));
+      runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+    }
+
+    console.log('✅ Run завершён. Финальный статус:', runStatus.status);
+
+    if (runStatus.status !== 'completed') {
+      return res.status(500).json({ error: 'Run did not complete successfully' });
     }
 
     const messages = await openai.beta.threads.messages.list(thread.id);
-    const lastMessage = messages.data
-      .filter(msg => msg.role === 'assistant')
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+    const lastMessage = messages.data.find(
+      (msg) => msg.role === 'assistant'
+    );
 
-    const text = lastMessage?.content?.[0]?.text?.value;
+    const reply = lastMessage?.content?.[0]?.text?.value || 'Ответ не найден';
 
-    console.log('📤 Ответ Assistant:', text);
+    console.log('📨 Ответ ассистента:', reply);
 
-    res.status(200).json({ text, threadId: thread.id });
-
+    return res.status(200).json({
+      threadId: thread.id,
+      runId: run.id,
+      reply,
+    });
   } catch (error) {
     console.error('❌ Ошибка:', error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 }
