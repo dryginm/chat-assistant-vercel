@@ -1,44 +1,55 @@
-import { config } from "dotenv";
-config();
-import OpenAI from "openai";
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 export default async function handler(req, res) {
   const { threadId, runId } = req.body;
   console.log("🔍 [check-run] Проверка статуса run:", { threadId, runId });
 
   if (!threadId || !runId) {
-    return res.status(400).json({ error: "threadId и runId обязательны" });
+    return res.status(400).json({ error: "Missing threadId or runId" });
   }
 
-  try {
-    let runStatus;
-    const maxAttempts = 20;
-    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const headers = {
+    "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+    "OpenAI-Beta": "assistants=v2",
+    "Content-Type": "application/json",
+  };
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const run = await openai.beta.threads.runs.retrieve(threadId, runId);
-      runStatus = run.status;
+  const fetchRunStatus = async () => {
+    const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+      method: "GET",
+      headers,
+    });
 
-      console.log(`📊 Попытка ${attempt}: статус run = ${runStatus}`);
-
-      if (["completed", "failed", "cancelled"].includes(runStatus)) {
-        return res.status(200).json({ status: runStatus });
-      }
-
-      // ⏱ Ждём перед следующей проверкой
-      await delay(10_000);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText);
     }
 
-    // ⏳ Превышено количество попыток
-    return res.status(202).json({
-      status: "timeout",
-      message: "Ожидание завершения run превысило лимит"
-    });
+    const data = await response.json();
+    return data.status;
+  };
+
+  try {
+    let status = "queued";
+    let attempts = 0;
+    const maxAttempts = 20;
+    const delay = 10000; // 10 секунд
+
+    while (status !== "completed" && status !== "failed" && attempts < maxAttempts) {
+      status = await fetchRunStatus();
+      console.log(`🔄 Попытка ${attempts + 1}: статус = ${status}`);
+      if (status === "completed" || status === "failed") break;
+
+      attempts++;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+
+    if (status !== "completed") {
+      return res.status(408).json({ error: `Run not completed after ${attempts} attempts`, status });
+    }
+
+    res.status(200).json({ status: "completed" });
 
   } catch (error) {
     console.error("❌ Ошибка в check-run:", error);
-    return res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message });
   }
 }
