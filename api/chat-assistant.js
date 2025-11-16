@@ -4,69 +4,69 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-const assistantId = process.env.ASSISTANT_ID;
+const ASSISTANT_ID = process.env.ASSISTANT_ID;
 
 export default async function handler(req, res) {
   try {
     const { threadId, message } = req.body;
+
     console.log('📬 Входящий запрос:', { threadId, message });
 
-    // 1. Создаём новый thread, если не был передан
-    let threadIdFinal = threadId;
-    if (!threadId) {
-      const thread = await openai.beta.threads.create();
-      threadIdFinal = thread.id;
-      console.log('🧵 Новый thread создан:', threadIdFinal);
-    } else {
-      console.log('📌 Используем thread:', threadIdFinal);
+    if (!message || typeof message !== 'string') {
+      console.error('❌ Ошибка: message не передано или не строка');
+      return res.status(400).json({ error: 'Message is required and must be a string' });
     }
 
-    // 2. Добавляем сообщение в thread
-    const msg = await openai.beta.threads.messages.create(threadIdFinal, {
+    const threadIdFinal = threadId || (await openai.beta.threads.create()).id;
+    console.log('📌 Используем thread:', threadIdFinal);
+
+    const addedMessage = await openai.beta.threads.messages.create(threadIdFinal, {
       role: 'user',
       content: message
     });
-    console.log('✉️ Сообщение добавлено в thread:', msg.id);
+    console.log('✉️ Сообщение добавлено в thread:', addedMessage.id);
 
-    // 3. Создаём запуск ассистента
     const run = await openai.beta.threads.runs.create(threadIdFinal, {
-      assistant_id: assistantId
+      assistant_id: ASSISTANT_ID
     });
     console.log('🤖 Assistant run создан:', run.id, run);
 
-    // 4. Ждём завершения
+    if (!run?.id || !threadIdFinal) {
+      console.error('❌ Ошибка: run.id или threadIdFinal не определены');
+      return res.status(500).json({ error: 'run.id or threadIdFinal is undefined' });
+    }
+
     let runStatus = await openai.beta.threads.runs.retrieve(threadIdFinal, run.id);
     let attempts = 0;
     while (['queued', 'in_progress'].includes(runStatus.status) && attempts < 20) {
-      await new Promise((r) => setTimeout(r, 1000)); // ждем 1 сек
+      await new Promise((r) => setTimeout(r, 1000));
       runStatus = await openai.beta.threads.runs.retrieve(threadIdFinal, run.id);
       attempts++;
     }
 
     if (runStatus.status !== 'completed') {
-      console.error('❌ Run не завершён:', runStatus.status);
-      return res.status(500).json({ error: 'Assistant run did not complete in time' });
+      console.error('❌ Run не завершился. Статус:', runStatus.status);
+      return res.status(500).json({ error: 'Run did not complete', status: runStatus.status });
     }
 
-    // 5. Получаем сообщения и находим последний ответ ассистента
     const messages = await openai.beta.threads.messages.list(threadIdFinal);
-    const lastMessage = messages.data
-      .filter((msg) => msg.role === 'assistant')
-      .sort((a, b) => b.created_at - a.created_at)[0];
+    const lastMessage = messages.data.find((msg) => msg.role === 'assistant');
 
     if (!lastMessage) {
-      console.error('❌ Ответ ассистента не найден');
-      return res.status(500).json({ error: 'No assistant message found' });
+      console.warn('⚠️ Assistant не вернул сообщение');
+      return res.status(200).json({ result: '', threadId: threadIdFinal });
     }
 
     const text = lastMessage.content
-      .map((part) => part.text?.value || '')
-      .join('\n');
+      .map((part) => (typeof part.text?.value === 'string' ? part.text.value : ''))
+      .join('\n')
+      .trim();
 
-    console.log('✅ Ответ ассистента:', text);
-    return res.status(200).json({ text, threadId: threadIdFinal, runId: run.id });
-  } catch (err) {
-    console.error('❌ Ошибка:', err);
-    return res.status(500).json({ error: err.message || 'Unknown error' });
+    console.log('✅ Ответ assistant:', text);
+
+    return res.status(200).json({ result: text, threadId: threadIdFinal });
+  } catch (error) {
+    console.error('❌ Ошибка:', error);
+    return res.status(500).json({ error: error.message || 'Unknown error' });
   }
 }
