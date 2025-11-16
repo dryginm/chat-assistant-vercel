@@ -1,5 +1,3 @@
-// File: /api/chat-assistant.js
-
 import { OpenAI } from 'openai';
 
 const openai = new OpenAI({
@@ -36,14 +34,12 @@ export default async function handler(req, res) {
 
     console.log('✉️ Сообщение добавлено в thread:', msg.id);
 
-    const run = await openai.beta.threads.runs.create({
-      thread_id: thread.id,
+    const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id: ASSISTANT_ID,
     });
 
     console.log('🤖 Assistant run создан:', run.id);
 
-    // Ждём завершения выполнения (можно заменить на polling, если нужно)
     let runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
 
     while (
