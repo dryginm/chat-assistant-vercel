@@ -1,81 +1,82 @@
-import { OpenAI } from 'openai';
+// api/chat-assistant.js
+
+import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY
 });
 
+const ASSISTANT_ID = process.env.ASSISTANT_ID;
+
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  const { threadId, message } = req.body;
-
-  if (!message) {
-    return res.status(400).json({ error: 'Missing message' });
-  }
-
-  const assistantId = process.env.ASSISTANT_ID;
-  if (!assistantId || !openai.apiKey) {
-    return res.status(500).json({ error: 'Missing environment variables' });
-  }
-
   try {
-    // Шаг 1. Создаём или получаем thread
+    const { threadId, message } = req.body;
+
+    console.log('➡️ Входящий запрос:', { threadId, message });
+
     let thread;
-    if (threadId) {
-      thread = await openai.beta.threads.retrieve(threadId);
-    } else {
+    if (!threadId) {
+      // Создаём новый поток
       thread = await openai.beta.threads.create();
+      console.log('🧵 Новый thread создан:', thread.id);
+    } else {
+      // Используем существующий поток
+      thread = { id: threadId };
+      console.log('📌 Используем thread:', threadId);
     }
 
-    // Шаг 2. Добавляем сообщение в thread
-    await openai.beta.threads.messages.create(thread.id, {
+    // Добавляем сообщение в поток
+    const userMessage = await openai.beta.threads.messages.create(thread.id, {
       role: 'user',
-      content: message,
+      content: message
     });
+    console.log('✉️ Сообщение добавлено в thread:', userMessage.id);
 
-    // Шаг 3. Запускаем assistant run
+    // Запускаем Assistant
     const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id: assistantId,
+      assistant_id: ASSISTANT_ID
     });
+    console.log('▶️ Assistant run создан:', run.id);
 
-    // Ждём завершения run
-    let completedRun;
-    const maxRetries = 16;
-    let retries = 0;
-    while (retries < maxRetries) {
-      completedRun = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+    const runId = run.id;
+
+    // Ожидаем завершения run
+    let attempts = 0;
+    let completedRun = null;
+
+    while (attempts < 10) {
+      completedRun = await openai.beta.threads.runs.retrieve(thread.id, runId);
+      console.log(`⌛ Статус на попытке ${attempts + 1}: ${completedRun.status}`);
+
       if (completedRun.status === 'completed') break;
-      if (completedRun.status === 'failed') {
-        return res.status(500).json({ error: 'Run failed' });
+      if (completedRun.status === 'failed' || completedRun.status === 'cancelled') {
+        throw new Error(`Run завершился с ошибкой: ${completedRun.status}`);
       }
-      await new Promise(resolve => setTimeout(resolve, 1000)); // 1s delay
-      retries++;
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      attempts++;
     }
 
     if (completedRun.status !== 'completed') {
-      return res.status(500).json({ error: 'Run did not complete in time' });
+      throw new Error('Run не завершился вовремя');
     }
 
-    // Получаем последнее сообщение от ассистента
+    // Получаем ответ Assistant'а
     const messages = await openai.beta.threads.messages.list(thread.id);
-    const assistantMessages = messages.data.filter(msg => msg.role === 'assistant');
+    const lastMessage = messages.data.find(m => m.role === 'assistant');
 
-    if (assistantMessages.length === 0) {
-      return res.status(500).json({ error: 'No assistant messages found' });
-    }
+    const reply = lastMessage?.content?.[0]?.text?.value || 'Нет ответа от Assistant';
 
-    const lastMessage = assistantMessages[0].content
-      .map(part => part.text?.value || '')
-      .join('\n');
+    console.log('✅ Ответ Assistant:', reply);
 
     return res.status(200).json({
       threadId: thread.id,
-      response: lastMessage,
+      runId,
+      reply
     });
+
   } catch (error) {
-    console.error('❌ Error:', error);
-    return res.status(500).json({ error: error.message || 'Unknown error' });
+    console.error('❌ Ошибка:', error);
+    return res.status(500).json({ error: error.message || 'Internal Server Error' });
   }
 }
