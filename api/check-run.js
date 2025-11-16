@@ -1,28 +1,18 @@
+// /api/check-run.js
+
 export default async function handler(req, res) {
   try {
     const { threadId, runId } = req.body;
     console.log("🔍 [check-run] Проверка статуса run:", { threadId, runId });
 
-    if (!threadId || !runId) {
-      throw new Error("threadId и runId обязательны");
-    }
-
-    const response = await fetch(
-      `https://api.openai.com/v1/threads/${threadId}/runs/${runId}`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          "OpenAI-Beta": "assistants=v2",
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Ошибка от OpenAI: ${response.status} ${errText}`);
-    }
+    const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "OpenAI-Beta": "assistants=v2",
+        "Content-Type": "application/json",
+      },
+    });
 
     const data = await response.json();
     console.log("📊 Статус run:", data.status);
