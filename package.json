@@ -1,0 +1,23 @@
+{
+  "name": "chat-assistant-vercel",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dryginm/chat-assistant-vercel.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/dryginm/chat-assistant-vercel/issues"
+  },
+  "homepage": "https://github.com/dryginm/chat-assistant-vercel#readme",
+  "dependencies": {
+    "openai": "^6.9.0"
+  }
+}
