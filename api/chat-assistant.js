@@ -45,7 +45,7 @@ export default async function handler(req, res) {
     const maxRetries = 16;
     let retries = 0;
     while (retries < maxRetries) {
-      completedRun = await openai.beta.threads.runs.retrieve(run.id, thread.id); // ✅ FIX: правильный порядок аргументов
+      completedRun = await openai.beta.threads.runs.retrieve(thread.id, run.id);
       if (completedRun.status === 'completed') break;
       if (completedRun.status === 'failed') {
         return res.status(500).json({ error: 'Run failed' });
