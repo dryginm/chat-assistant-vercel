@@ -1,25 +1,44 @@
-// /api/check-run.js
+import { config } from "dotenv";
+config();
+import OpenAI from "openai";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export default async function handler(req, res) {
-  try {
-    const { threadId, runId } = req.body;
-    console.log("🔍 [check-run] Проверка статуса run:", { threadId, runId });
+  const { threadId, runId } = req.body;
+  console.log("🔍 [check-run] Проверка статуса run:", { threadId, runId });
 
-    const response = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "OpenAI-Beta": "assistants=v2",
-        "Content-Type": "application/json",
-      },
+  if (!threadId || !runId) {
+    return res.status(400).json({ error: "threadId и runId обязательны" });
+  }
+
+  try {
+    let runStatus;
+    const maxAttempts = 20;
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const run = await openai.beta.threads.runs.retrieve(threadId, runId);
+      runStatus = run.status;
+
+      console.log(`📊 Попытка ${attempt}: статус run = ${runStatus}`);
+
+      if (["completed", "failed", "cancelled"].includes(runStatus)) {
+        return res.status(200).json({ status: runStatus });
+      }
+
+      // ⏱ Ждём перед следующей проверкой
+      await delay(10_000);
+    }
+
+    // ⏳ Превышено количество попыток
+    return res.status(202).json({
+      status: "timeout",
+      message: "Ожидание завершения run превысило лимит"
     });
 
-    const data = await response.json();
-    console.log("📊 Статус run:", data.status);
-
-    res.status(200).json({ status: data.status });
   } catch (error) {
     console.error("❌ Ошибка в check-run:", error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 }
