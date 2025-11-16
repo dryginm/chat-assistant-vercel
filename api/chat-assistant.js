@@ -1,23 +1,19 @@
 import { OpenAI } from 'openai';
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY
 });
 
-const ASSISTANT_ID = process.env.ASSISTANT_ID;
+const assistantId = process.env.ASSISTANT_ID;
 
 export default async function handler(req, res) {
   try {
     const { threadId, message } = req.body;
     console.log('📬 Входящий запрос:', { threadId, message });
 
-    if (!message || typeof message !== 'string') {
-      throw new Error('❌ message is missing or not a string');
-    }
-
-    // 1. Создаём thread при необходимости
+    // 1. Создаём новый thread, если не был передан
     let threadIdFinal = threadId;
-    if (!threadIdFinal) {
+    if (!threadId) {
       const thread = await openai.beta.threads.create();
       threadIdFinal = thread.id;
       console.log('🧵 Новый thread создан:', threadIdFinal);
@@ -26,57 +22,51 @@ export default async function handler(req, res) {
     }
 
     // 2. Добавляем сообщение в thread
-    const addedMsg = await openai.beta.threads.messages.create(threadIdFinal, {
+    const msg = await openai.beta.threads.messages.create(threadIdFinal, {
       role: 'user',
-      content: message,
+      content: message
     });
-    console.log('✉️ Сообщение добавлено в thread:', addedMsg.id);
+    console.log('✉️ Сообщение добавлено в thread:', msg.id);
 
-    // 3. Запускаем ассистента
+    // 3. Создаём запуск ассистента
     const run = await openai.beta.threads.runs.create(threadIdFinal, {
-      assistant_id: ASSISTANT_ID,
+      assistant_id: assistantId
     });
+    console.log('🤖 Assistant run создан:', run.id, run);
 
-    console.log('🤖 Assistant run создан:', run?.id, run);
-
-    if (!run?.id) {
-      throw new Error('❌ Ошибка: run.id is undefined');
-    }
-
-    // 4. Ждём завершения run
+    // 4. Ждём завершения
     let runStatus = await openai.beta.threads.runs.retrieve(threadIdFinal, run.id);
-    while (runStatus.status === 'queued' || runStatus.status === 'in_progress') {
-      console.log('⏳ Ожидаем завершения run... статус:', runStatus.status);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+    let attempts = 0;
+    while (['queued', 'in_progress'].includes(runStatus.status) && attempts < 20) {
+      await new Promise((r) => setTimeout(r, 1000)); // ждем 1 сек
       runStatus = await openai.beta.threads.runs.retrieve(threadIdFinal, run.id);
+      attempts++;
     }
 
-    console.log('✅ Run завершён:', runStatus.status);
+    if (runStatus.status !== 'completed') {
+      console.error('❌ Run не завершён:', runStatus.status);
+      return res.status(500).json({ error: 'Assistant run did not complete in time' });
+    }
 
-    // 5. Получаем ответ
+    // 5. Получаем сообщения и находим последний ответ ассистента
     const messages = await openai.beta.threads.messages.list(threadIdFinal);
-    const lastMessage = messages.data.find(
-      (msg) => msg.role === 'assistant' && msg.run_id === run.id
-    );
+    const lastMessage = messages.data
+      .filter((msg) => msg.role === 'assistant')
+      .sort((a, b) => b.created_at - a.created_at)[0];
 
     if (!lastMessage) {
-      throw new Error('❌ Ответ от ассистента не найден');
+      console.error('❌ Ответ ассистента не найден');
+      return res.status(500).json({ error: 'No assistant message found' });
     }
 
-    const responseText = lastMessage.content
+    const text = lastMessage.content
       .map((part) => part.text?.value || '')
       .join('\n');
 
-    console.log('📤 Ответ ассистента:', responseText);
-
-    // 6. Возвращаем результат
-    res.status(200).json({
-      threadId: threadIdFinal,
-      message: responseText,
-    });
-
-  } catch (error) {
-    console.error('❌ Ошибка:', error);
-    res.status(500).json({ error: error.message || 'Internal Server Error' });
+    console.log('✅ Ответ ассистента:', text);
+    return res.status(200).json({ text, threadId: threadIdFinal, runId: run.id });
+  } catch (err) {
+    console.error('❌ Ошибка:', err);
+    return res.status(500).json({ error: err.message || 'Unknown error' });
   }
 }
