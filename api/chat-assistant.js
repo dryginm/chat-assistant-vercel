@@ -20,27 +20,31 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Invalid or missing message' });
     }
 
-    const thread =
-      threadId != null
-        ? { id: threadId }
-        : await openai.beta.threads.create();
+    // 1. Используем либо переданный threadId, либо создаём новый thread
+    const thread = threadId
+      ? { id: threadId }
+      : await openai.beta.threads.create();
 
-    console.log('📌 Используем thread:', thread.id);
+    const threadIdFinal = thread.id;
+    console.log('📌 Используем thread:', threadIdFinal);
 
-    const msg = await openai.beta.threads.messages.create(thread.id, {
+    // 2. Добавляем сообщение от пользователя
+    const msg = await openai.beta.threads.messages.create(threadIdFinal, {
       role: 'user',
       content: message,
     });
 
     console.log('✉️ Сообщение добавлено в thread:', msg.id);
 
-    const run = await openai.beta.threads.runs.create(thread.id, {
+    // 3. Запускаем ассистента
+    const run = await openai.beta.threads.runs.create(threadIdFinal, {
       assistant_id: ASSISTANT_ID,
     });
 
     console.log('🤖 Assistant run создан:', run.id);
 
-    let runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+    // 4. Ждём завершения
+    let runStatus = await openai.beta.threads.runs.retrieve(threadIdFinal, run.id);
 
     while (
       runStatus.status === 'queued' ||
@@ -48,7 +52,7 @@ export default async function handler(req, res) {
     ) {
       console.log(`⏳ Ждём завершения run... статус: ${runStatus.status}`);
       await new Promise((r) => setTimeout(r, 1500));
-      runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+      runStatus = await openai.beta.threads.runs.retrieve(threadIdFinal, run.id);
     }
 
     console.log('✅ Run завершён. Финальный статус:', runStatus.status);
@@ -57,17 +61,16 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Run did not complete successfully' });
     }
 
-    const messages = await openai.beta.threads.messages.list(thread.id);
-    const lastMessage = messages.data.find(
-      (msg) => msg.role === 'assistant'
-    );
+    // 5. Получаем последнее сообщение ассистента
+    const messages = await openai.beta.threads.messages.list(threadIdFinal);
+    const lastMessage = messages.data.find((msg) => msg.role === 'assistant');
 
     const reply = lastMessage?.content?.[0]?.text?.value || 'Ответ не найден';
 
     console.log('📨 Ответ ассистента:', reply);
 
     return res.status(200).json({
-      threadId: thread.id,
+      threadId: threadIdFinal,
       runId: run.id,
       reply,
     });
