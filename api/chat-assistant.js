@@ -1,72 +1,71 @@
-import { OpenAI } from 'openai';
+import OpenAI from "openai";
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
-
-const ASSISTANT_ID = process.env.ASSISTANT_ID;
 
 export default async function handler(req, res) {
   try {
     const { threadId, message } = req.body;
+    console.log("📬 [chat-assistant] Входящий запрос:", { threadId, message });
 
-    console.log('📬 Входящий запрос:', { threadId, message });
+    // 1. Получаем или создаём thread
+    const thread =
+      threadId && threadId.startsWith("thread_")
+        ? { id: threadId }
+        : await openai.beta.threads.create();
 
-    if (!message || typeof message !== 'string') {
-      console.error('❌ Ошибка: message не передано или не строка');
-      return res.status(400).json({ error: 'Message is required and must be a string' });
-    }
+    console.log("📌 Используем thread:", thread.id);
 
-    const threadIdFinal = threadId || (await openai.beta.threads.create()).id;
-    console.log('📌 Используем thread:', threadIdFinal);
-
-    const addedMessage = await openai.beta.threads.messages.create(threadIdFinal, {
-      role: 'user',
-      content: message
+    // 2. Добавляем сообщение
+    const msg = await openai.beta.threads.messages.create(thread.id, {
+      role: "user",
+      content: message,
     });
-    console.log('✉️ Сообщение добавлено в thread:', addedMessage.id);
 
-    const run = await openai.beta.threads.runs.create(threadIdFinal, {
-      assistant_id: ASSISTANT_ID
+    console.log("✉️ Сообщение добавлено:", msg.id);
+
+    // 3. Запускаем run
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id: process.env.ASSISTANT_ID,
     });
-    console.log('🤖 Assistant run создан:', run.id, run);
 
-    if (!run?.id || !threadIdFinal) {
-      console.error('❌ Ошибка: run.id или threadIdFinal не определены');
-      return res.status(500).json({ error: 'run.id or threadIdFinal is undefined' });
+    console.log("🤖 Run запущен:", run.id);
+
+    // 4. Ждём завершения
+    let runStatus;
+    const maxAttempts = 30;
+    let attempt = 0;
+
+    while (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, 1500));
+      runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+      console.log(`⏱️ Попытка ${attempt + 1}: статус =`, runStatus.status);
+
+      if (runStatus.status === "completed") break;
+      if (["failed", "cancelled", "expired"].includes(runStatus.status)) {
+        throw new Error(`Run status is "${runStatus.status}"`);
+      }
+
+      attempt++;
     }
 
-    let runStatus = await openai.beta.threads.runs.retrieve(threadIdFinal, run.id);
-    let attempts = 0;
-    while (['queued', 'in_progress'].includes(runStatus.status) && attempts < 20) {
-      await new Promise((r) => setTimeout(r, 1000));
-      runStatus = await openai.beta.threads.runs.retrieve(threadIdFinal, run.id);
-      attempts++;
+    if (runStatus.status !== "completed") {
+      throw new Error("Run did not complete in time.");
     }
 
-    if (runStatus.status !== 'completed') {
-      console.error('❌ Run не завершился. Статус:', runStatus.status);
-      return res.status(500).json({ error: 'Run did not complete', status: runStatus.status });
-    }
+    // 5. Получаем результат
+    const messages = await openai.beta.threads.messages.list(thread.id);
+    const assistantMessages = messages.data.filter((m) => m.role === "assistant");
 
-    const messages = await openai.beta.threads.messages.list(threadIdFinal);
-    const lastMessage = messages.data.find((msg) => msg.role === 'assistant');
+    console.log(`📨 Получено сообщений ассистента: ${assistantMessages.length}`);
 
-    if (!lastMessage) {
-      console.warn('⚠️ Assistant не вернул сообщение');
-      return res.status(200).json({ result: '', threadId: threadIdFinal });
-    }
-
-    const text = lastMessage.content
-      .map((part) => (typeof part.text?.value === 'string' ? part.text.value : ''))
-      .join('\n')
-      .trim();
-
-    console.log('✅ Ответ assistant:', text);
-
-    return res.status(200).json({ result: text, threadId: threadIdFinal });
+    res.status(200).json({
+      threadId: thread.id,
+      messages: assistantMessages.map((m) => m.content?.[0]?.text?.value ?? ""),
+    });
   } catch (error) {
-    console.error('❌ Ошибка:', error);
-    return res.status(500).json({ error: error.message || 'Unknown error' });
+    console.error("❌ Ошибка в chat-assistant:", error);
+    res.status(500).json({ error: error.message });
   }
 }
